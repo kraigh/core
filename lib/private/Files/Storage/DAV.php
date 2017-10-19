@@ -219,6 +219,13 @@ class DAV extends Common {
 				$content[] = $file;
 			}
 			return IteratorDirectory::wrap($content);
+		} catch (ClientHttpException $e) {
+			if ($e->getHttpStatus() === Http::STATUS_NOT_FOUND) {
+				$this->statCache->clear($path . '/');
+				$this->statCache->set($path, false);
+				return false;
+			}
+			$this->convertException($e, $path);
 		} catch (\Exception $e) {
 			$this->convertException($e, $path);
 		}
@@ -831,7 +838,10 @@ class DAV extends Common {
 			// parse error because the server returned HTML instead of XML,
 			// possibly temporarily down
 			throw new StorageNotAvailableException(get_class($e) . ': ' . $e->getMessage());
-		} else if (($e instanceof StorageNotAvailableException) || ($e instanceof StorageInvalidException)) {
+		} else if (($e instanceof StorageNotAvailableException)
+			|| ($e instanceof StorageInvalidException)
+			|| ($e instanceof \Sabre\DAV\Exception
+		)) {
 			// rethrow
 			throw $e;
 		}

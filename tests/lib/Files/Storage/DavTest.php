@@ -36,6 +36,7 @@ use GuzzleHttp\Exception\ClientException;
 use Sabre\DAV\Exception\InsufficientStorage;
 use Sabre\DAV\Exception\Forbidden;
 use OCP\Files\StorageNotAvailableException;
+use OC\Files\Storage\DAV;
 
 /**
  * Class DavTest
@@ -46,10 +47,25 @@ use OCP\Files\StorageNotAvailableException;
  */
 class DavTest extends TestCase {
 
+	/**
+	 * @var DAV
+	 */
 	private $instance;
 
+	/**
+	 * @var IClientService
+	 */
 	private $httpClientService;
+
+	/**
+	 * @var IWebdavClientService
+	 */
 	private $webdavClientService;
+
+	/**
+	 * @var Client
+	 */
+	private $client;
 
 	protected function setUp() {
 		parent::setUp();
@@ -59,6 +75,9 @@ class DavTest extends TestCase {
 
 		$this->webdavClientService = $this->createMock(IWebdavClientService::class);
 		$this->overwriteService('WebdavClientService', $this->webdavClientService);
+
+		$this->client = $this->createMock(Client::class);
+		$this->webdavClientService->method('newClient')->willReturn($this->client);
 
 		$this->instance = new \OC\Files\Storage\DAV([
 			'user' => 'davuser',
@@ -104,6 +123,7 @@ class DavTest extends TestCase {
 			[$this->createClientHttpException(Http::STATUS_INSUFFICIENT_STORAGE), InsufficientStorage::class],
 			[$this->createClientHttpException(Http::STATUS_FORBIDDEN), Forbidden::class],
 			[$this->createClientHttpException(Http::STATUS_INTERNAL_SERVER_ERROR), StorageNotAvailableException::class],
+			[new \Sabre\DAV\Exception\Forbidden('Forbidden'), \Sabre\DAV\Exception\Forbidden::class],
 			[new \InvalidArgumentException(), StorageNotAvailableException::class],
 			[new StorageNotAvailableException(), StorageNotAvailableException::class],
 			[new StorageInvalidException(), StorageInvalidException::class],
@@ -114,9 +134,7 @@ class DavTest extends TestCase {
 	 * @dataProvider convertExceptionDataProvider
 	 */
 	public function testConvertException($inputException, $expectedExceptionClass) {
-		$client = $this->createMock(Client::class);
-		$this->webdavClientService->method('newClient')->willReturn($client);
-		$client->method('propfind')->will($this->throwException($inputException));
+		$this->client->method('propfind')->will($this->throwException($inputException));
 
 		$thrownException = null;
 		try {
@@ -127,6 +145,149 @@ class DavTest extends TestCase {
 
 		$this->assertNotNull($thrownException);
 		$this->assertInstanceOf($expectedExceptionClass, $thrownException);
+	}
+
+	public function testMkdir() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('MKCOL', 'new%25dir', null)
+			->willReturn(['statusCode' => Http::STATUS_CREATED]);
+
+		$this->assertTrue($this->instance->mkdir('/new%dir'));
+	}
+
+	public function testMkdirAlreadyExists() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('MKCOL', 'new%25dir', null)
+			->willReturn(['statusCode' => Http::STATUS_METHOD_NOT_ALLOWED]);
+
+		$this->assertFalse($this->instance->mkdir('/new%dir'));
+	}
+
+	/**
+	 * @expectedException \OCA\DAV\Connector\Sabre\Exception\Forbidden
+	 */
+	public function testMkdirException() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('MKCOL', 'new%25dir', null)
+			->willThrowException($this->createClientHttpException(Http::STATUS_FORBIDDEN));
+
+		$this->instance->mkdir('/new%dir');
+	}
+
+	public function testRmdir() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('DELETE', 'old%25dir', null)
+			->willReturn(['statusCode' => Http::STATUS_NO_CONTENT]);
+
+		$this->assertTrue($this->instance->rmdir('/old%dir'));
+	}
+
+	public function testRmdirUnexist() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('DELETE', 'old%25dir', null)
+			->willReturn(['statusCode' => Http::STATUS_NOT_FOUND]);
+
+		$this->assertFalse($this->instance->rmdir('/old%dir'));
+	}
+
+	/**
+	 * @expectedException \OCA\DAV\Connector\Sabre\Exception\Forbidden
+	 */
+	public function testRmdirException() {
+		$this->client->expects($this->once())
+			->method('request')
+			->with('DELETE', 'old%25dir', null)
+			->willThrowException($this->createClientHttpException(Http::STATUS_FORBIDDEN));
+
+		$this->instance->rmdir('/old%dir');
+	}
+
+	public function testOpenDir() {
+		$responseBody = [
+			// root entry
+			'some%25dir' => [],
+			'some%25dir/first%25folder' => [],
+			'some%25dir/second' => [],
+		];
+
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir', [], 1)
+			->willReturn($responseBody);
+
+		$dir = $this->instance->opendir('/some%dir');
+		$entries = [];
+		while ($entry = readdir($dir)) {
+			$entries[] = $entry;
+		}
+
+		$this->assertCount(2, $entries);
+		$this->assertEquals('first%folder', $entries[0]);
+		$this->assertEquals('second', $entries[1]);
+	}
+
+	public function testOpenDirNotFound() {
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir', [], 1)
+			->willThrowException($this->createClientHttpException(Http::STATUS_NOT_FOUND));
+
+		$this->assertFalse($this->instance->opendir('/some%dir'));
+	}
+
+	/**
+	 * @expectedException \OCA\DAV\Connector\Sabre\Exception\Forbidden
+	 */
+	public function testOpenDirException() {
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir', [], 1)
+			->willThrowException($this->createClientHttpException(Http::STATUS_FORBIDDEN));
+
+		$this->instance->opendir('/some%dir');
+	}
+
+	public function testFileTypeDir() {
+		$resourceTypeObj = $this->getMockBuilder('\stdclass')
+			->setMethods(['getValue'])
+			->getMock();
+		$resourceTypeObj->method('getValue')
+			->willReturn(['{DAV:}collection']);
+
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir/file%25type', $this->contains('{DAV:}resourcetype'))
+			->willReturn([
+				'{DAV:}resourcetype' => $resourceTypeObj
+			]);
+
+		$this->assertEquals('dir', $this->instance->filetype('/some%dir/file%type'));
+	}
+
+	public function testFileTypeFile() {
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir/file%25type', $this->contains('{DAV:}resourcetype'))
+			->willReturn([]);
+
+		$this->assertEquals('file', $this->instance->filetype('/some%dir/file%type'));
+	}
+
+	/**
+	 * @expectedException \OCA\DAV\Connector\Sabre\Exception\Forbidden
+	 */
+	public function testFileTypeException() {
+		$this->client->expects($this->once())
+			->method('propfind')
+			->with('some%25dir/file%25type', $this->contains('{DAV:}resourcetype'))
+			->willThrowException($this->createClientHttpException(Http::STATUS_FORBIDDEN));
+
+		$this->instance->filetype('/some%dir/file%type');
 	}
 }
 
