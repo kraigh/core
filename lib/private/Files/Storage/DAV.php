@@ -46,7 +46,6 @@ use OCP\Files\FileInfo;
 use OCP\Files\StorageInvalidException;
 use OCP\Files\StorageNotAvailableException;
 use OCP\Util;
-use Sabre\DAV\Client;
 use Sabre\DAV\Xml\Property\ResourceType;
 use Sabre\HTTP\ClientException;
 use Sabre\HTTP\ClientHttpException;
@@ -84,6 +83,9 @@ class DAV extends Common {
 	/** @var \OCP\Http\Client\IClientService */
 	private $httpClientService;
 
+	/** @var \OCP\Http\Client\IWebdavClientService */
+	private $webdavClientService;
+
 	/**
 	 * @param array $params
 	 * @throws \Exception
@@ -91,6 +93,7 @@ class DAV extends Common {
 	public function __construct($params) {
 		$this->statCache = new ArrayCache();
 		$this->httpClientService = \OC::$server->getHTTPClientService();
+		$this->webdavClientService = \OC::$server->getWebdavClientService();
 		if (isset($params['host']) && isset($params['user']) && isset($params['password'])) {
 			$host = $params['host'];
 			//remove leading http[s], will be generated in createBaseUri()
@@ -110,17 +113,6 @@ class DAV extends Common {
 				}
 			} else {
 				$this->secure = false;
-			}
-			if ($this->secure === true) {
-				// inject mock for testing
-				$certManager = \OC::$server->getCertificateManager();
-				if (is_null($certManager)) { //no user
-					$certManager = \OC::$server->getCertificateManager(null);
-				}
-				$certPath = $certManager->getAbsoluteBundlePath();
-				if (file_exists($certPath)) {
-					$this->certPath = $certPath;
-				}
 			}
 			$this->root = isset($params['root']) ? $params['root'] : '/';
 			if (!$this->root || $this->root[0] != '/') {
@@ -143,22 +135,13 @@ class DAV extends Common {
 		$settings = [
 			'baseUri' => $this->createBaseUri(),
 			'userName' => $this->user,
-			'password' => $this->password,
+			'password' => $this->password
 		];
 		if (isset($this->authType)) {
 			$settings['authType'] = $this->authType;
 		}
 
-		$proxy = \OC::$server->getConfig()->getSystemValue('proxy', '');
-		if($proxy !== '') {
-			$settings['proxy'] = $proxy;
-		}
-
-		$this->client = new Client($settings);
-		$this->client->setThrowExceptions(true);
-		if ($this->secure === true && $this->certPath) {
-			$this->client->addCurlSetting(CURLOPT_CAINFO, $this->certPath);
-		}
+		$this->client = $this->webdavClientService->newClient($settings);
 	}
 
 	/**
@@ -837,10 +820,10 @@ class DAV extends Common {
 				// ignore exception for MethodNotAllowed, false will be returned
 				return;
 			}
-			$this->throwByStatusCode($e->getHttpStatus(), $path);
+			$this->throwByStatusCode($e->getHttpStatus(), $e, $path);
 		} else if ($e instanceof \GuzzleHttp\Exception\ClientException || $e instanceof \GuzzleHttp\Exception\ServerException) {
 			if ($e->getResponse() instanceof ResponseInterface) {
-				$this->throwByStatusCode($e->getResponse()->getStatusCode());
+				$this->throwByStatusCode($e->getResponse()->getStatusCode(), $e);
 			}
 			// connection timeout or refused, server could be temporarily down
 			throw new StorageNotAvailableException(get_class($e) . ': ' . $e->getMessage());
@@ -863,7 +846,7 @@ class DAV extends Common {
 	 * @param string $path optional path for some exceptions
 	 * @throws \Exception Sabre or ownCloud exceptions
 	 */
-	private function throwByStatusCode($statusCode, $path = '') {
+	private function throwByStatusCode($statusCode, $e, $path = '') {
 		switch ($statusCode) {
 			case Http::STATUS_LOCKED:
 				throw new \OCP\Lock\LockedException($path);
@@ -873,7 +856,7 @@ class DAV extends Common {
 			case Http::STATUS_INSUFFICIENT_STORAGE:
 				throw new InsufficientStorage();
 			case Http::STATUS_FORBIDDEN:
-				throw new Forbidden();
+				throw new Forbidden('Forbidden');
 		}
 		throw new StorageNotAvailableException(get_class($e) . ': ' . $e->getMessage());
 	}

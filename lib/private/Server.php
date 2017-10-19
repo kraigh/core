@@ -100,6 +100,7 @@ use OC\Files\External\Service\UserStoragesService;
 use OC\Files\External\Service\UserGlobalStoragesService;
 use OC\Files\External\Service\GlobalStoragesService;
 use OC\Files\External\Service\DBConfigService;
+use OC\Http\Client\WebdavClientService;
 
 /**
  * Class Server
@@ -487,6 +488,14 @@ class Server extends ServerContainer implements IServerContainer {
 			$user = \OC_User::getUser();
 			$uid = $user ? $user : null;
 			return new ClientService(
+				$c->getConfig(),
+				new \OC\Security\CertificateManager($uid, new View(), $c->getConfig())
+			);
+		});
+		$this->registerService('WebdavClientService', function (Server $c) {
+			$user = \OC_User::getUser();
+			$uid = $user ? $user : null;
+			return new WebdavClientService(
 				$c->getConfig(),
 				new \OC\Security\CertificateManager($uid, new View(), $c->getConfig())
 			);
@@ -1262,6 +1271,15 @@ class Server extends ServerContainer implements IServerContainer {
 	 */
 	public function getHTTPClientService() {
 		return $this->query('HttpClientService');
+	}
+
+	/**
+	 * Returns an instance of the Webdav client service
+	 *
+	 * @return \OCP\Http\Client\IWebdavClientService
+	 */
+	public function getWebdavClientService() {
+		return $this->query('WebdavClientService');
 	}
 
 	/**
